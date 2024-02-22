@@ -178,6 +178,26 @@ export const TriggerEditPage: FC = () => {
           });
           break;
 
+        case EntryAttributeTypeTypeEnum.NAMED_OBJECT:
+          console.log(
+            "[onix/EntryAttributeTypeTypeEnum.NAMED_OBJECT] attr: ",
+            action.attr
+          );
+          console.log(
+            "[onix/EntryAttributeTypeTypeEnum.NAMED_OBJECT] values: ",
+            action.values
+          );
+          action.values.map((val) => {
+            retValues.push({
+              attrId: action.attr.id,
+              value: {
+                name: val.strCond,
+                id: val.refCond?.id ?? 0,
+              },
+            });
+          });
+          break;
+
         case EntryAttributeTypeTypeEnum.ARRAY_OBJECT:
           retValues.push({
             attrId: action.attr.id,
@@ -186,8 +206,21 @@ export const TriggerEditPage: FC = () => {
               .map((val) => val.refCond?.id ?? 0),
           });
           break;
+
+        case EntryAttributeTypeTypeEnum.ARRAY_NAMED_OBJECT:
+          console.log("action", action);
+          retValues.push({
+            attrId: action.attr.id,
+            values: action.values.map((val) => ({
+              name: val.strCond,
+              id: val.refCond?.id ?? 0,
+            })),
+          });
+          break;
       }
     });
+
+    console.log("[onix/convertConditions2ServerFormat] retValues: ", retValues);
 
     return retValues;
   };
