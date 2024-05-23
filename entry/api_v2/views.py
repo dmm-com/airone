@@ -23,7 +23,7 @@ from airone.lib.drf import (
     RequiredParameterError,
     YAMLParser,
 )
-from airone.lib.types import AttrType, AttrTypeValue
+from airone.lib.types import AttrType, AttrTypeValue, AttrDefaultValue
 from api_v1.entry.serializer import EntrySearchChainSerializer
 from entity.models import Entity, EntityAttr
 from entry.api_v2.pagination import EntryReferralPagination
@@ -310,6 +310,139 @@ class AdvancedSearchAPI(generics.GenericAPIView):
             )
 
         # === End of Function: _get_joined_resp() ===
+        def _combine_joinattr_result(
+            superior_resp, joined_resp, join_attr, attr_history, will_filter_by_joined_attr
+        ):
+            # This is needed to set result as blank value
+            base_name = ".".join(attr_history + [join_attr["name"]])
+            blank_joining_info = {
+                "%s.%s" % (base_name, k["name"]): {
+                    "is_readable": True,
+                    "type": k["type"],
+                    "value": AttrDefaultValue.get(k["type"]),
+                }
+                for k in join_attr["attrinfo"]
+            }
+
+            # convert search result to dict to be able to handle it without loop
+            joined_resp_info = {
+                x["entry"]["id"]: {
+                    "%s.%s" % (base_name, k): {
+                        **v,
+                        "joined_history": attr_history + [join_attr["name"]],
+                    }
+                    for k, v in x["attrs"].items()
+                    if any(_x["name"] == k for _x in join_attr["attrinfo"])
+                }
+                for x in joined_resp
+            }
+
+            # this inserts result to previous search result
+            new_ret_values = []
+            joined_ret_values = []
+            for resp_result in superior_resp:
+                # joining search result to original one
+                ref_info = resp_result["attrs"].get(join_attr["name"])
+
+                # This get referral Item-ID from joined search result
+                ref_list = _get_ref_id_from_es_result(ref_info)
+                for ref_id in ref_list:
+                    if ref_id and ref_id in joined_resp_info:  # type: ignore
+                        # join valid value
+                        resp_result["attrs"] |= joined_resp_info[ref_id]
+
+                        # collect only the result that matches with keyword of joined_attr parameter
+                        copied_result = deepcopy(resp_result)
+                        new_ret_values.append(copied_result)
+                        joined_ret_values.append(copied_result)
+
+                    else:
+                        # join EMPTY value
+                        resp_result["attrs"] |= blank_joining_info  # type: ignore
+                        joined_ret_values.append(deepcopy(resp_result))
+
+                if len(ref_list) == 0:
+                    # join EMPTY value
+                    resp_result["attrs"] |= blank_joining_info  # type: ignore
+                    joined_ret_values.append(deepcopy(resp_result))
+
+            if will_filter_by_joined_attr:
+                return new_ret_values
+            else:
+                return joined_ret_values
+
+        # === End of Function: _combine_joinattr_result() ===
+
+        def _unite_combined_results(dst_results, src_results, target_attrnames):
+            """
+            This method joins 2-combined results into one
+            """
+            for dst_result in dst_results:
+                # dst_ref_list = sum(
+                #    [_get_ref_id_from_es_result(x) for x in dst_result["attrs"].values()], []
+                # )
+                for cb_result in src_results:
+                    for attrname, attrinfo in cb_result["attrs"].items():
+                        if attrinfo.get("joined_history") is None:
+                            # When there is no parameter of joined_history, it's no value to unite
+                            continue
+
+                        if dst_result["attrs"].get(attrname) is not None:
+                            # It's has alreday registered
+                            continue
+
+                        # This checks dst_result is qualified to be joined by whether
+                        # - parent attribute information of attrinfo is existed.
+                        # - it has actual value (the attrinfo that has actual value
+                        #   must have "joined_history").
+                        parent_attrname = ".".join(attrinfo["joined_history"])
+                        dst_parent_attrinfo = dst_result["attrs"].get(parent_attrname, {})
+                        if dst_parent_attrinfo and dst_parent_attrinfo.get("joined_history"):
+                            dst_result["attrs"][attrname] = attrinfo
+
+            return dst_results
+
+        # === End of Function: _unite_combined_results() ===
+
+        def _re_search_by_join_attr(superior_resp, join_attr, attr_history=[]):
+            # NOTE: it's need to stop recursive limit
+
+            # get results of Entry.search_entries() with join_attr parameter
+            (will_filter_by_joined_attr, joined_resp) = _get_joined_resp(
+                superior_resp["ret_values"], join_attr
+            )
+
+            # combine search results with join_attr parameter into original one
+            combined_results = _combine_joinattr_result(
+                superior_resp["ret_values"],
+                joined_resp["ret_values"],
+                join_attr,
+                attr_history,
+                will_filter_by_joined_attr,
+            )
+
+            # re-search using join_attrs parameter that is specified in join_attrs parameter
+            attr_stacks = attr_history + [join_attr["name"]]
+
+            for co_join_attr in join_attr.get("join_attrs", []):
+                _co_results = _re_search_by_join_attr(joined_resp, co_join_attr, attr_stacks)
+                if _co_results:
+                    # This merge results from both _re_search_by_join_attr(),
+                    # which are combined_results and _co_results, into the combined_results.
+                    # In this processing, the _combine_joinattr_result() is useless
+                    # because _result is the value that is returned from it.
+                    combined_results = _unite_combined_results(
+                        combined_results,
+                        _co_results,
+                        [
+                            ".".join(attr_stacks + [co_join_attr["name"], x["name"]])
+                            for x in co_join_attr["attrinfo"]
+                        ],
+                    )
+
+            return combined_results
+
+        # === End of Function: _re_search_by_join_attr() ===
 
         def _get_ref_id_from_es_result(attrinfo):
             if attrinfo["type"] == AttrType.OBJECT:
@@ -376,65 +509,12 @@ class AdvancedSearchAPI(generics.GenericAPIView):
         # save total population number
         total_count = deepcopy(resp["ret_count"])
 
+        # Additional processing when join_attrs parameter is specified
         for join_attr in join_attrs:
-            (will_filter_by_joined_attr, joined_resp) = _get_joined_resp(
-                resp["ret_values"], join_attr
-            )
-            # This is needed to set result as blank value
-            blank_joining_info = {
-                "%s.%s" % (join_attr["name"], k["name"]): {
-                    "is_readable": True,
-                    "type": AttrType.STRING,
-                    "value": "",
-                }
-                for k in join_attr["attrinfo"]
-            }
-
-            # convert search result to dict to be able to handle it without loop
-            joined_resp_info = {
-                x["entry"]["id"]: {
-                    "%s.%s" % (join_attr["name"], k): v
-                    for k, v in x["attrs"].items()
-                    if any(_x["name"] == k for _x in join_attr["attrinfo"])
-                }
-                for x in joined_resp["ret_values"]
-            }
-
-            # this inserts result to previous search result
-            new_ret_values = []
-            joined_ret_values = []
-            for resp_result in resp["ret_values"]:
-                # joining search result to original one
-                ref_info = resp_result["attrs"].get(join_attr["name"])
-
-                # This get referral Item-ID from joined search result
-                ref_list = _get_ref_id_from_es_result(ref_info)
-                for ref_id in ref_list:
-                    if ref_id and ref_id in joined_resp_info:  # type: ignore
-                        # join valid value
-                        resp_result["attrs"] |= joined_resp_info[ref_id]
-
-                        # collect only the result that matches with keyword of joined_attr parameter
-                        copied_result = deepcopy(resp_result)
-                        new_ret_values.append(copied_result)
-                        joined_ret_values.append(copied_result)
-
-                    else:
-                        # join EMPTY value
-                        resp_result["attrs"] |= blank_joining_info  # type: ignore
-                        joined_ret_values.append(deepcopy(resp_result))
-
-                if len(ref_list) == 0:
-                    # join EMPTY value
-                    resp_result["attrs"] |= blank_joining_info  # type: ignore
-                    joined_ret_values.append(deepcopy(resp_result))
-
-            if will_filter_by_joined_attr:
-                resp["ret_values"] = new_ret_values
-                resp["ret_count"] = len(new_ret_values)
-            else:
-                resp["ret_values"] = joined_ret_values
-                resp["ret_count"] = len(joined_ret_values)
+            joined_results = _re_search_by_join_attr(resp, join_attr)
+            if joined_results:
+                resp["ret_values"] = joined_results
+                resp["ret_count"] = len(joined_results)
 
         # convert field values to fit entry retrieve API data type, as a workaround.
         # FIXME should be replaced with DRF serializer etc

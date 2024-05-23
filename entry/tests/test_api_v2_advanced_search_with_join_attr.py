@@ -1,6 +1,8 @@
 import json
 
 from airone.lib.elasticsearch import FilterKey
+from airone.lib.types import AttrType
+from entity.models import Entity
 from entry.tests.test_api_v2 import BaseViewTest
 
 
@@ -274,3 +276,269 @@ class ViewTest(BaseViewTest):
                 {"as_string": "hoge-0"},
             ],
         )
+
+    def test_recursive_join_attr(self):
+        entity: Entity = self.create_entity(
+            **{
+                "user": self.user,
+                "name": "entity",
+                "attrs": [
+                    {"name": "top", "type": AttrType.OBJECT, "ref": self.ref_entity},
+                ],
+            }
+        )
+        # Create items that has following referral structure
+        # entry.top -> I0(.ref) -> I1(.ref) -> I2.text.puyo
+        item2 = self.add_entry(self.user, "I2", self.ref_entity, values={"text": "puyo"})
+        item1 = self.add_entry(
+            self.user,
+            "I1",
+            self.ref_entity,
+            values={
+                "ref": item2,
+                "text": "fuga",
+            },
+        )
+        item0 = self.add_entry(
+            self.user,
+            "I0",
+            self.ref_entity,
+            values={
+                "val": "hoge",
+                "ref": item1,
+                "refs": [item2],
+            },
+        )
+
+        self.add_entry(
+            self.user,
+            "entry",
+            entity,
+            values={
+                "top": item0,
+            },
+        )
+
+        params = {
+            "entities": [entity.id],
+            "attrinfo": [],
+            "join_attrs": [
+                {
+                    "name": "top",  # means I0 entry
+                    "attrinfo": [
+                        {"name": "val", "filter_key": int(FilterKey.CLEARED), "keyword": ""},
+                        {"name": "ref", "filter_key": int(FilterKey.CLEARED), "keyword": ""},
+                    ],
+                    "join_attrs": [
+                        {
+                            "name": "ref",  # means I1 entry
+                            "attrinfo": [
+                                {
+                                    "name": "text",
+                                    "filter_key": int(FilterKey.CLEARED),
+                                    "keyword": "",
+                                },
+                                {
+                                    "name": "ref",
+                                    "filter_key": int(FilterKey.CLEARED),
+                                    "keyword": "",
+                                },
+                            ],
+                            "join_attrs": [
+                                {
+                                    "name": "ref",  # means I2 entry
+                                    "attrinfo": [
+                                        {
+                                            "name": "text",
+                                            "filter_key": int(FilterKey.CLEARED),
+                                            "keyword": "",
+                                        }
+                                    ],
+                                    "join_attrs": [],
+                                    "offset": 0,
+                                }
+                            ],
+                            "offset": 0,
+                        }
+                    ],
+                    "offset": 0,
+                },
+            ],
+        }
+        resp = self.client.post(
+            "/entry/api/v2/advanced_search/", json.dumps(params), "application/json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["count"], 1)
+
+        # This checks returned value has specified recursive join_attr results
+        tgt_info = resp.json()["values"][0]
+        self.assertEqual(tgt_info["entity"]["name"], entity.name)
+        self.assertEqual(tgt_info["entity"]["id"], entity.id)
+        self.assertEqual(
+            tgt_info["attrs"],
+            {
+                "top": {
+                    "is_readable": True,
+                    "type": AttrType.OBJECT,
+                    "value": {"as_object": {"id": item0.id, "name": item0.name}},
+                },
+                "top.val": {
+                    "is_readable": True,
+                    "type": AttrType.STRING,
+                    "value": {"as_string": "hoge"},
+                },
+                "top.ref": {
+                    "is_readable": True,
+                    "type": AttrType.OBJECT,
+                    "value": {"as_object": {"id": item1.id, "name": item1.name}},
+                },
+                "top.ref.ref": {
+                    "is_readable": True,
+                    "type": AttrType.OBJECT,
+                    "value": {"as_object": {"id": item2.id, "name": item2.name}},
+                },
+                "top.ref.text": {
+                    "is_readable": True,
+                    "type": AttrType.TEXT,
+                    "value": {"as_string": "fuga"},
+                },
+                "top.ref.ref.text": {
+                    "is_readable": True,
+                    "type": AttrType.TEXT,
+                    "value": {"as_string": "puyo"},
+                },
+            },
+        )
+
+    def test_recursive_join_attr_with_wrong_attrinfo(self):
+        entity: Entity = self.create_entity(
+            **{
+                "user": self.user,
+                "name": "entity",
+                "attrs": [
+                    {"name": "top", "type": AttrType.OBJECT, "ref": self.ref_entity},
+                ],
+            }
+        )
+        # Create items that has following referral structure
+        # entry.top -> I0(.ref) -> I1(.ref) -> I2.text.puyo
+        item2 = self.add_entry(self.user, "I2", self.ref_entity, values={"text": "puyo"})
+        item1 = self.add_entry(
+            self.user,
+            "I1",
+            self.ref_entity,
+            values={
+                "ref": item2,
+                "text": "fuga",
+            },
+        )
+        item0 = self.add_entry(
+            self.user,
+            "I0",
+            self.ref_entity,
+            values={
+                "val": "hoge",
+                "ref": item1,
+                "refs": [item2],
+            },
+        )
+
+        self.add_entry(
+            self.user,
+            "entry",
+            entity,
+            values={
+                "top": item0,
+            },
+        )
+
+        params = {
+            "entities": [entity.id],
+            "attrinfo": [],
+            "join_attrs": [
+                {
+                    "name": "top",  # means I0 entry
+                    "attrinfo": [
+                        {"name": "val", "filter_key": int(FilterKey.CLEARED), "keyword": ""},
+                        {"name": "ref", "filter_key": int(FilterKey.CLEARED), "keyword": ""},
+                    ],
+                    "join_attrs": [
+                        {
+                            "name": "ref",  # means I1 entry
+                            "attrinfo": [
+                                {
+                                    "name": "text",
+                                    "filter_key": int(FilterKey.CLEARED),
+                                    "keyword": "",
+                                },
+                                {
+                                    "name": "hoge",
+                                    "filter_key": int(FilterKey.CLEARED),
+                                    "keyword": "",
+                                },
+                            ],
+                            "join_attrs": [
+                                {
+                                    "name": "ref",  # means I2 entry
+                                    "attrinfo": [
+                                        {
+                                            "name": "text",
+                                            "filter_key": int(FilterKey.CLEARED),
+                                            "keyword": "",
+                                        }
+                                    ],
+                                    "join_attrs": [],
+                                    "offset": 0,
+                                }
+                            ],
+                            "offset": 0,
+                        }
+                    ],
+                    "offset": 0,
+                },
+            ],
+        }
+        resp = self.client.post(
+            "/entry/api/v2/advanced_search/", json.dumps(params), "application/json"
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(
+            resp.json(),
+            {
+                "non_field_errors": [
+                    {"message": "The specified attrinfo(hoge) does not exist", "code": "AE-121000"}
+                ]
+            },
+        )
+
+    def test_recursive_join_attr_of_array_entry_with_empty_value(self):
+        """
+        This test for the fixing, that result with join_attr parameter has wrong attribute
+        type for array_object typed attribute.
+        """
+        params = {
+            "entities": [self.entity.id],
+            "attrinfo": [
+                {"name": "ref", "filter_key": int(FilterKey.CLEARED), "keyword": "RefEntry", },
+                {"name": "refs", "filter_key": int(FilterKey.CLEARED), "keyword": ""},
+            ],
+            "join_attrs": [
+                {
+                    "name": "ref",
+                    "attrinfo": [
+                        {"name": "refs", "filter_key": int(FilterKey.CLEARED), "keyword": ""}
+                    ],
+                    "join_attrs": [],
+                },
+            ],
+        }
+        resp = self.client.post(
+            "/entry/api/v2/advanced_search/", json.dumps(params), "application/json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        for info in resp.json()["values"]:
+            # check result of ARRAY_ENTRY typed joined attr infomation that
+            # each type parameters are set correctly whatever value is empty.
+            self.assertEqual(info["attrs"]["ref.refs"]["type"], AttrType.ARRAY_OBJECT)
+            self.assertEqual(info["attrs"]["ref.refs"]["value"], {"as_array_object": []})

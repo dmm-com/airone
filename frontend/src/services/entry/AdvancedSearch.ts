@@ -16,6 +16,8 @@ export type AttrsFilter = Record<string, AttrFilter>;
 export type JoinAttr = {
   name: string;
   attrinfo: AdvancedSearchResultAttrInfo[];
+  offset?: number;
+  joinAttrs?: { [key: string]: any }[];
 };
 
 interface AdvancedSearchParams {

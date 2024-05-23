@@ -78,6 +78,33 @@ class ExportTaskParams(BaseModel):
     target_id: int
 
 
+class AdvancedSearchResultAttrInfoParams(BaseModel):
+    name: str
+    filter_key: FilterKey
+    keyword: str
+    type: int = 0
+
+
+class AdvancedSearchJoinAttrInfoParams(BaseModel):
+    name: str
+    offset: int
+    attrinfo: list[AdvancedSearchResultAttrInfoParams]
+    join_attrs: list["AdvancedSearchJoinAttrInfoParams"]
+
+
+class AdvancedSearchParams(BaseModel):
+    entities: list[int]
+    entry_name: str
+    attrinfo: list[AdvancedSearchResultAttrInfoParams]
+    join_attrs: list[AdvancedSearchJoinAttrInfoParams]
+    has_referral: bool
+    referral_name: str = ""
+    is_output_all: bool
+    is_all_entities: bool
+    entry_limit: int
+    entry_offset: int
+
+
 class EntityAttributeType(TypedDict):
     id: int
     name: str
@@ -1152,6 +1179,8 @@ class AdvancedSearchJoinAttrInfoSerializer(serializers.Serializer):
     name = serializers.CharField()
     offset = serializers.IntegerField(default=0)
     attrinfo = AdvancedSearchResultAttrInfoSerializer(many=True)
+    join_attrs = serializers.ListField(child=serializers.DictField(), required=False)
+    # join_attrs = AdvancedSearchJoinAttrInfoSerializer(many=True, required=False)
 
 
 class AdvancedSearchSerializer(serializers.Serializer):
@@ -1175,6 +1204,40 @@ class AdvancedSearchSerializer(serializers.Serializer):
         if any([len(attr.get("keyword", "")) > CONFIG_ENTRY.MAX_QUERY_SIZE for attr in attrs]):
             raise ValidationError("keyword(s) in attrs are too large")
         return attrs
+
+    def validate(self, params: AdvancedSearchParams):
+        advanced_search_params = AdvancedSearchParams(**params)
+
+        def _insert_type_to_joinattr(entities, join_attrs: list[AdvancedSearchJoinAttrInfoParams]):
+            for join_attr in join_attrs:
+                join_attr_entity_attrs = EntityAttr.objects.filter(
+                    name=join_attr.name, parent_entity__in=entities
+                )
+                referral_entities = Entity.objects.filter(
+                    id__in=sum(
+                        [[y.id for y in x.referral.all()] for x in join_attr_entity_attrs], []
+                    )
+                )
+                referral_attrs = EntityAttr.objects.filter(parent_entity__in=referral_entities)
+
+                for attr_info in join_attr.attrinfo:
+                    for info in referral_attrs:
+                        if attr_info.name == info.name:
+                            attr_info.type = info.type
+                            break
+
+                    if attr_info.type == 0:
+                        raise ValidationError(
+                            f"The specified attrinfo({attr_info.name}) does not exist"
+                        )
+
+                # insert type parameter recursively
+                if join_attr.join_attrs is not None:
+                    _insert_type_to_joinattr(referral_entities, join_attr.join_attrs)
+
+        _insert_type_to_joinattr(advanced_search_params.entities, advanced_search_params.join_attrs)
+
+        return advanced_search_params.model_dump()
 
 
 class AdvancedSearchResultValueAttrSerializer(serializers.Serializer):
