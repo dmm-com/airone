@@ -1,4 +1,5 @@
 import re
+import time
 from copy import deepcopy
 from datetime import datetime, timedelta
 
@@ -13,7 +14,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from airone.exceptions import ElasticsearchException
-from airone.lib import custom_view
+from airone.lib import advancedsearch, custom_view
 from airone.lib.acl import ACLType
 from airone.lib.drf import (
     DuplicatedObjectExistsError,
@@ -366,7 +367,23 @@ class AdvancedSearchAPI(generics.GenericAPIView):
             if entity and request.user.has_permission(entity, ACLType.Readable):
                 hint_entity_ids.append(entity.id)
 
-        resp = Entry.search_entries(
+        # XXX experimental advanced search
+        start_time = time.perf_counter()
+        resp = advancedsearch.search_entries(
+            user=request.user,
+            entities=hint_entity_ids,
+            attr_hints=hint_attrs,
+            entry_name=hint_entry_name,
+            hint_referral=hint_referral,
+            is_output_all=is_output_all,
+            limit=entry_limit,
+            offset=entry_offset,
+        )
+        end_time = time.perf_counter()
+        print(f"[Experimental Advanced Search] processing time: {(end_time - start_time):.6f} sec")
+
+        start_time = time.perf_counter()
+        Entry.search_entries(
             request.user,
             hint_entity_ids,
             hint_attrs,
@@ -376,6 +393,9 @@ class AdvancedSearchAPI(generics.GenericAPIView):
             is_output_all,
             offset=entry_offset,
         )
+        end_time = time.perf_counter()
+        print(f"[Current Advanced Search] processing time: {(end_time - start_time):.6f} sec")
+
         # save total population number
         total_count = deepcopy(resp.ret_count)
 
